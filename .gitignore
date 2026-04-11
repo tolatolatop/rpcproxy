@@ -1,0 +1,43 @@
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# uv: commit uv.lock (and optionally .python-version after `uv python pin`)
+
+# Bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Builds / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Env secrets
+*.env.local

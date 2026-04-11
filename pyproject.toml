@@ -3,16 +3,15 @@ name = "rpcproxy"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "tolatolatop",email = "tolatolatop@gmail.com"}
+    { name = "tolatolatop", email = "tolatolatop@gmail.com" },
 ]
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = [
-]
-
-[tool.poetry]
-packages = [{include = "rpcproxy", from = "src"}]
+dependencies = []
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rpcproxy"]

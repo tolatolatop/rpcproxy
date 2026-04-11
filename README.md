@@ -71,7 +71,7 @@ uv sync
 | 同步依赖（含可编辑安装本包） | `uv sync` |
 | 新增依赖 | `uv add <package>` |
 | 在虚拟环境中执行命令 | `uv run python ...` |
-| 运行测试（配置好后） | `uv run pytest` |
+| 运行测试 | `uv run --group dev pytest` |
 
 可选：使用 `uv python pin <version>` 固定解释器版本并将 `.python-version` 纳入版本控制。
 

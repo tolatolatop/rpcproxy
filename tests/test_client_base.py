@@ -47,6 +47,13 @@ def _response_for_outbound_raw(
     return dumps_message(response_message(result, call_id=req["call_id"], result_type=rt))
 
 
+def _request_from_outbound_raw(raw: str):
+    msg = loads_message(raw)
+    req = extract_request(msg)
+    assert req is not None
+    return req
+
+
 @pytest.fixture
 def connect_patch():
     ws, incoming, outgoing = _mock_transport()
@@ -74,6 +81,52 @@ async def test_set_state_roundtrip(connect_patch):
     assert len(outgoing) == 1
     incoming.put_nowait(_response_for_outbound_raw(outgoing[0], "ack", result_type="str"))
     assert await task == "ack"
+    await client.close()
+
+
+async def test_post_message_roundtrip(connect_patch):
+    _connect, _ws, incoming, outgoing = connect_patch
+    client = _RecordingClient(default_call_timeout=5.0)
+    await client.connect("ws://x")
+
+    task = asyncio.create_task(
+        client.post_message(
+            receiver="peer-1",
+            body={"text": "hi"},
+            request_id="req-99",
+        )
+    )
+    await asyncio.sleep(0)
+    assert len(outgoing) == 1
+    req = _request_from_outbound_raw(outgoing[0])
+    assert req["method"] == "post_message"
+    assert req.get("arguments") == {
+        "receiver": "peer-1",
+        "request_id": "req-99",
+        "body": {"text": "hi"},
+    }
+    incoming.put_nowait(_response_for_outbound_raw(outgoing[0], "msg-ok", result_type="str"))
+    assert await task == "msg-ok"
+    await client.close()
+
+
+async def test_post_message_body_none_sends_empty_dict(connect_patch):
+    _connect, _ws, incoming, outgoing = connect_patch
+    client = _RecordingClient(default_call_timeout=5.0)
+    await client.connect("ws://x")
+
+    task = asyncio.create_task(client.post_message(receiver="r"))
+    await asyncio.sleep(0)
+    assert len(outgoing) == 1
+    req = _request_from_outbound_raw(outgoing[0])
+    assert req["method"] == "post_message"
+    assert req.get("arguments") == {
+        "receiver": "r",
+        "request_id": "",
+        "body": {},
+    }
+    incoming.put_nowait(_response_for_outbound_raw(outgoing[0], 7, result_type="int"))
+    assert await task == "7"
     await client.close()
 
 

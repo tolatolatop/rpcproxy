@@ -38,6 +38,7 @@
 - **`await set_state(key, value)`** 向对端发起 **`set_state`** RPC（参数为 `arguments: {key, value}`），返回对端 `response.result`；超时由构造参数 **`default_call_timeout`** 控制（默认 `30.0` 秒，`None` 表示不超时）。
 - **`await post_message(receiver="", body=None, request_id="")`** 向对端发起 **`post_message`** RPC；`body` 为 `None` 时按 `{}` 发送；返回值对对端 `result` 做 **`str()`** 以匹配 `-> str`。若对端随后以 **`receive_envelope`** 回推同一条 **`request_id`**，基类会在调用子类 **`receive_envelope`** 之前登记 **「已送达回执」**；本端可用 **`await wait_relay_predicate(request_id, timeout)`** 等待该回执（`timeout` 为 **`None`** 表示无限等待，与 **`set_state`** 一致）。
 - **`wait_relay_predicate`** 成功时返回 **`{"ok": True, "arguments": {...}}`**：其中 **`arguments`** 为入站 RPC **`arguments`** 的浅拷贝（业务字段如 **`body`**、**`message_type`** 等在其中读取）；同一 **`request_id`** 仅允许一个并发等待，第二个等待者会触发 **`RuntimeError`**。连接关闭或读循环结束时，未完成的等待会被 **`cancel`**，stash 会清空。
+- 尚未被取走的回执缓存在 **有界 LRU stash** 中，由构造参数 **`relay_stash_max_size`** 控制条目上限（默认 **`256`**）。超过上限时**最久未更新**的条目会被丢弃（**`DEBUG`** 日志含被驱逐的 **`request_id`**）；**`relay_stash_max_size=0`** 表示禁用 stash，仅当已调用 **`wait_relay_predicate`** 阻塞等待时才会通过 Future 收到回执（「信封先到、后调用等待」不再成立）。同一 **`request_id`** 再次入站会覆盖并视为最近使用。
 - **`await wait_until_disconnected()`** 在 **`connect`** 之后阻塞，直到读循环结束（对端关连接或 **`close()`**）；CLI demo 用其保持进程存活。
 - 可重写 **`on_unmatched_message`**，处理非入站调用、亦非本端 pending 应答的 JSON 对象（demo 以 **WARNING** 级别记日志）。
 

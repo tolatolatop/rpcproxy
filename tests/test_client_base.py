@@ -54,6 +54,19 @@ def _request_from_outbound_raw(raw: str):
     return req
 
 
+def _enqueue_receive_envelope(
+    incoming: asyncio.Queue[str], args: dict[str, Any], call_id: str
+) -> None:
+    inbound = {
+        "request": {
+            "method": "receive_envelope",
+            "arguments": args,
+            "call_id": call_id,
+        }
+    }
+    incoming.put_nowait(dumps_message(inbound))
+
+
 @pytest.fixture
 def connect_patch():
     ws, incoming, outgoing = _mock_transport()
@@ -161,14 +174,7 @@ async def test_wait_relay_predicate_stash_after_inbound(connect_patch):
     await client.connect("ws://x")
 
     args = {"request_id": "rid-2", "body": {}}
-    inbound = {
-        "request": {
-            "method": "receive_envelope",
-            "arguments": args,
-            "call_id": "in-2",
-        }
-    }
-    incoming.put_nowait(dumps_message(inbound))
+    _enqueue_receive_envelope(incoming, args, "in-2")
     await asyncio.sleep(0)
 
     receipt = await client.wait_relay_predicate("rid-2", 1.0)
@@ -251,3 +257,44 @@ async def test_close_cancels_pending_relay_wait(connect_patch):
     await client.close()
     with pytest.raises(asyncio.CancelledError):
         await wait_task
+
+
+async def test_relay_stash_lru_evicts_oldest(connect_patch):
+    _c, _w, incoming, outgoing = connect_patch
+    client = _RecordingClient(relay_stash_max_size=2)
+    await client.connect("ws://x")
+
+    _enqueue_receive_envelope(incoming, {"request_id": "r-a"}, "in-a")
+    _enqueue_receive_envelope(incoming, {"request_id": "r-b"}, "in-b")
+    _enqueue_receive_envelope(incoming, {"request_id": "r-c"}, "in-c")
+    await asyncio.sleep(0)
+    assert len(outgoing) == 3
+
+    with pytest.raises(asyncio.TimeoutError):
+        await client.wait_relay_predicate("r-a", 0.05)
+
+    rb = await client.wait_relay_predicate("r-b", 1.0)
+    assert rb["arguments"]["request_id"] == "r-b"
+    rc = await client.wait_relay_predicate("r-c", 1.0)
+    assert rc["arguments"]["request_id"] == "r-c"
+    await client.close()
+
+
+async def test_relay_stash_max_size_zero_drops_unwaited_receipts(connect_patch):
+    _c, _w, incoming, outgoing = connect_patch
+    client = _RecordingClient(relay_stash_max_size=0)
+    await client.connect("ws://x")
+
+    _enqueue_receive_envelope(incoming, {"request_id": "early"}, "in-1")
+    await asyncio.sleep(0)
+    assert len(outgoing) == 1
+
+    with pytest.raises(asyncio.TimeoutError):
+        await client.wait_relay_predicate("early", 0.05)
+
+    wait_task = asyncio.create_task(client.wait_relay_predicate("late", 1.0))
+    await asyncio.sleep(0)
+    _enqueue_receive_envelope(incoming, {"request_id": "late"}, "in-2")
+    receipt = await wait_task
+    assert receipt["arguments"]["request_id"] == "late"
+    await client.close()

@@ -7,6 +7,7 @@ import json
 import logging
 import uuid
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from typing import Any
 
 import websockets
@@ -52,13 +53,19 @@ class RpcProxyClientBase(ABC):
     and abstract ``receive_envelope``; outbound ``set_state`` / ``post_message`` RPC.
     """
 
-    def __init__(self, *, default_call_timeout: float | None = 30.0) -> None:
+    def __init__(
+        self,
+        *,
+        default_call_timeout: float | None = 30.0,
+        relay_stash_max_size: int = 256,
+    ) -> None:
         self._channel_id: str = uuid.uuid4().hex
         self._default_call_timeout = default_call_timeout
+        self._relay_stash_max_size = relay_stash_max_size
         self._ws: Any | None = None
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._reader_task: asyncio.Task[None] | None = None
-        self._relay_stash: dict[str, dict[str, Any]] = {}
+        self._relay_stash: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._relay_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     @property
@@ -172,7 +179,16 @@ class RpcProxyClientBase(ABC):
         if waiter is not None and not waiter.done():
             waiter.set_result(receipt)
             return
+        if self._relay_stash_max_size <= 0:
+            logger.debug(
+                "relay: stash disabled, dropping receipt for request_id=%s", request_id
+            )
+            return
+        self._relay_stash.pop(request_id, None)
         self._relay_stash[request_id] = receipt
+        while len(self._relay_stash) > self._relay_stash_max_size:
+            evicted_rid, _ = self._relay_stash.popitem(last=False)
+            logger.debug("relay stash evicted request_id=%s", evicted_rid)
 
     def _relay_cleanup(self) -> None:
         for fut in self._relay_waiters.values():
@@ -186,7 +202,8 @@ class RpcProxyClientBase(ABC):
     ) -> dict[str, Any]:
         """
         Wait until an inbound ``receive_envelope`` RPC carries this ``request_id``,
-        or return a stashed receipt if one arrived earlier.
+        or return a stashed receipt if one arrived earlier (stash is bounded LRU;
+        see ``relay_stash_max_size``).
 
         Returns ``{"ok": True, "arguments": {...}}`` (shallow copy of wire arguments).
         """

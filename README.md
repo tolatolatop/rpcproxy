@@ -44,6 +44,18 @@
 
 线格式由 **`rpcproxy.fastapi_ws_rpc`**（含 `call_request_message` 等）统一构造；**不**安装 `fastapi-websocket-rpc` 运行时依赖。
 
+### Handler 客户端（`HandlerPostMessageClient`）
+
+[`HandlerPostMessageClient`](src/rpcproxy/client/handler_client.py) 继承 **`RpcProxyClientBase`**，构造时注入异步 **`handler`**，用于「服务端 **`receive_envelope` 推任务 → 客户端异步处理 → **`post_message`** 把结果发回」**。入站 **`arguments`** 的标准字段由 **[`ReceiveEnvelopeArguments`](src/rpcproxy/client/envelope_types.py)**（**`TypedDict`**）描述，线路上仍可带额外键。
+
+- **读循环不被阻塞**：入站 **`receive_envelope`** 在登记 relay 后**立即**返回 **`{"ok": True}`**（或校验失败时 **`{"ok": False}`**），真正的 **`handler`** 与 **`await post_message(...)`** 在 **`asyncio.create_task`** 的后台协程中执行；因此不得在 **`receive_envelope` 内直接 `await post_message`**（否则会卡住 **`_dispatch_inbound`**，其它入站 RPC 与心跳延迟）。
+- **`HandlerResult`**：**`body`** 发往 **`post_message`**；**`request_id`** 可选，为空时使用入站 **`request_id`**。**`post_message` 的 `receiver` 固定为入站信封的 `sender`**（推 RPC 的一方），不再支持按 **`receiver` 字段或固定地址**回传。
+- 入站 **`request_id`** **必须**非空（仅空白视为空）：否则**不启动** pipeline 并返回 **`{"ok": False}`**。
+- **`skip_post=True`**：仅 ACK，不调用 **`post_message`**。
+- **错误**：**`handler`** 抛错时调用 **`await self.on_handler_exception(exc, arguments)`**；基类默认仅 **`logger.error(..., exc_info=exc)`** 记日志。子类可**重写**该方法（通常先 **`await super().on_handler_exception(...)`**），再按需 **`await self.post_message(...)`**（**`receiver` 仍应为入站 `sender`**，勿把敏感栈信息写入 **`body`**）。
+- **`max_inflight`**：默认 **`8`**，始终用 **`asyncio.Semaphore`** 限制并发 pipeline 数（须 **`>= 1`**），减轻对端与事件循环压力。
+- 关闭连接时**已提交的**后台任务可能仍短暂运行或在 **`post_message`** 上失败，调用方应 **`await close()`** 并容忍收尾日志；与基类相同，仍可使用 **`wait_relay_predicate`** 与有界 stash。
+
 ### 日志
 
 - 运行任意 **`rpcproxy`** CLI 子命令时会在入口调用 **`setup_logging()`**（见 [`src/rpcproxy/logging_config.py`](src/rpcproxy/logging_config.py)）：为 **`rpcproxy`** 日志树挂载 **轮转文件**（`rpcproxy.log`）与 **stderr** 流，两者共用同一格式与级别。
@@ -88,7 +100,8 @@ uv sync --group dev
 
 - 配置见 **`[tool.pytest.ini_options]`**（**`asyncio_mode = auto`**，测试目录 **`tests/`**）。
 - **[`tests/test_client_base.py`](tests/test_client_base.py)** 使用 **`unittest.mock.patch`** 将 **`rpcproxy.client.base.websockets.connect`** 替换为 **`AsyncMock`**，由假 **`recv` / `send`**（队列与列表）驱动读循环，无需真实网络即可覆盖 **`connect`**、**`set_state`**、**`post_message`**、入站 **`receive_envelope`**、**`wait_relay_predicate`** 与 **`close`** 清理等行为。
-- 仅跑该文件：`uv run --group dev pytest tests/test_client_base.py -v`。
+- **[`tests/test_handler_client.py`](tests/test_handler_client.py)** 覆盖 **`HandlerPostMessageClient`**（ACK 早于 **`post_message`**、读循环不阻塞、**`skip_post`**、空 **`request_id`** 拒绝、**`on_handler_exception`** 子类扩展、**`max_inflight`**）。
+- 仅跑基类测试：`uv run --group dev pytest tests/test_client_base.py -v`。
 
 ### Demo（最小命令行）
 
@@ -108,7 +121,7 @@ rpcproxy/
 ├── src/
 │   └── rpcproxy/
 │       ├── fastapi_ws_rpc/   # 与 fastapi-websocket-rpc 一致的 RpcMessage 线格式
-│       ├── client/           # RpcProxyClientBase
+│       ├── client/           # RpcProxyClientBase、HandlerPostMessageClient、envelope_types
 │       ├── demo_loop.py      # DemoRpcProxyClient
 │       └── cli.py
 └── tests/

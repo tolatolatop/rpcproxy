@@ -101,11 +101,12 @@ uv sync --group dev
 - 配置见 **`[tool.pytest.ini_options]`**（**`asyncio_mode = auto`**，测试目录 **`tests/`**）。
 - **[`tests/test_client_base.py`](tests/test_client_base.py)** 使用 **`unittest.mock.patch`** 将 **`rpcproxy.client.base.websockets.connect`** 替换为 **`AsyncMock`**，由假 **`recv` / `send`**（队列与列表）驱动读循环，无需真实网络即可覆盖 **`connect`**、**`set_state`**、**`post_message`**、入站 **`receive_envelope`**、**`wait_relay_predicate`** 与 **`close`** 清理等行为。
 - **[`tests/test_handler_client.py`](tests/test_handler_client.py)** 覆盖 **`HandlerPostMessageClient`**（ACK 早于 **`post_message`**、读循环不阻塞、**`skip_post`**、空 **`request_id`** 拒绝、**`on_handler_exception`** 子类扩展、**`max_inflight`**）。
+- **[`tests/test_demo_loop.py`](tests/test_demo_loop.py)** 覆盖 **`demo_echo_envelope_handler`**（**`is_echo`**、body 浅拷贝）与 **`DemoRpcProxyClient`** 的 **`post_message`** echo 往返。
 - 仅跑基类测试：`uv run --group dev pytest tests/test_client_base.py -v`。
 
 ### Demo（最小命令行）
 
-安装后可用 **`rpcproxy demo <WS_URL>`** 连接 `ws://` 或 `wss://` 服务端：实现为 **`DemoRpcProxyClient`**（继承 [`RpcProxyClientBase`](src/rpcproxy/client/base.py)），仅处理 **fastapi-websocket-rpc 线格式的 RpcMessage**。**连接成功后**会立即用 **`set_state("token", <随机 token>)`** 向对端上报一次（`secrets.token_urlsafe(32)`），并以 **INFO** 记日志。入站 **`receive_envelope`** 将解析后的参数以 **INFO** 记日志并回复 `{"ok": true}`；**`_ping_`** / **`_get_channel_id_`** 由基类自动应答；无法识别的 JSON 对象以 **WARNING** 记日志。CLI 启动时会初始化日志并输出 **日志目录**（见上文「日志」）。传输层 **WebSocket Ping** 由 `websockets` 自动应答。使用 **Ctrl+C** 或等待对端关闭连接后退出；**`finally` 中会 `close()`** 释放连接。
+安装后可用 **`rpcproxy demo <WS_URL>`** 连接 `ws://` 或 `wss://` 服务端：实现为 **`DemoRpcProxyClient`**（继承 [`HandlerPostMessageClient`](src/rpcproxy/client/handler_client.py)），仅处理 **fastapi-websocket-rpc 线格式的 RpcMessage**。**连接成功后**会立即用 **`set_state("token", <随机 token>)`** 向对端上报一次（`secrets.token_urlsafe(32)`），并以 **INFO** 记日志。入站 **`receive_envelope`** 先快速 ACK（**`{"ok": true}`**），后台 **`demo_echo_envelope_handler`** 将解析后的参数以 **INFO** 记日志，再通过 **`post_message`** 把入站 **`body`** 的浅拷贝发回，并在 **`body`** 中写入 **`"is_echo": true`**；**`post_message` 的 `receiver` 为入站 `sender`**，故对端推信时应带非空 **`sender`** 与 **`request_id`**（无 **`request_id`** 时 pipeline 不启动，RPC 返回 **`{"ok": false}`**）。**`_ping_`** / **`_get_channel_id_`** 由基类自动应答；无法识别的 JSON 对象以 **WARNING** 记日志。CLI 启动时会初始化日志并输出 **日志目录**（见上文「日志」）。传输层 **WebSocket Ping** 由 `websockets` 自动应答。使用 **Ctrl+C** 或等待对端关闭连接后退出；**`finally` 中会 `close()`** 释放连接。
 
 ```bash
 uv run rpcproxy demo ws://127.0.0.1:8080/rpc
@@ -125,7 +126,9 @@ rpcproxy/
 │       ├── demo_loop.py      # DemoRpcProxyClient
 │       └── cli.py
 └── tests/
-    └── test_client_base.py   # RpcProxyClientBase（mock websockets.connect）
+    ├── test_client_base.py      # RpcProxyClientBase（mock connect）
+    ├── test_handler_client.py   # HandlerPostMessageClient
+    └── test_demo_loop.py        # demo echo / DemoRpcProxyClient
 ```
 
 ## 规范参考

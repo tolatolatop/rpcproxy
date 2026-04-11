@@ -21,12 +21,12 @@ def main() -> None:
 @main.command("demo")
 @click.argument("url")
 def demo_cmd(url: str) -> None:
-    """Connect to WS_URL using RpcProxyClientBase (fastapi_websocket_rpc RpcMessage).
+    """Connect to WS_URL using DemoRpcProxyClient (HandlerPostMessageClient echo demo).
 
     After connect, sends one ``set_state`` with a random ``token``. Inbound
-    ``receive_envelope`` and token ``set_state`` are logged; ``_ping_`` /
-    ``_get_channel_id_`` are answered by the base class. Unmatched JSON objects are
-    logged at WARNING. Press Ctrl+C to exit.
+    ``receive_envelope`` is logged and echoed via ``post_message`` (body gains
+    ``is_echo``). ``_ping_`` / ``_get_channel_id_`` are answered by the base class.
+    Unmatched JSON objects are logged at WARNING. Press Ctrl+C to exit.
     """
     try:
         asyncio.run(run_demo(url))

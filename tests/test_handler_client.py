@@ -11,6 +11,7 @@ import pytest
 from rpcproxy.client.base import _arg_str
 from rpcproxy.client.envelope_types import ReceiveEnvelopeArguments
 from rpcproxy.client.handler_client import HandlerPostMessageClient, HandlerResult
+from rpcproxy.fastapi_ws_rpc import dumps_message, extract_request, loads_message, response_message
 
 
 async def _noop_handler(**kw: object) -> HandlerResult:
@@ -20,7 +21,6 @@ async def _noop_handler(**kw: object) -> HandlerResult:
 def test_max_inflight_must_be_positive() -> None:
     with pytest.raises(ValueError, match="max_inflight"):
         HandlerPostMessageClient(_noop_handler, max_inflight=0)
-from rpcproxy.fastapi_ws_rpc import dumps_message, extract_request, loads_message, response_message
 
 
 def _mock_transport() -> tuple[AsyncMock, asyncio.Queue[str], list[str]]:

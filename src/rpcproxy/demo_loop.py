@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
-import sys
 from typing import Any
 
 from rpcproxy.client.base import RpcProxyClientBase
 
+logger = logging.getLogger(__name__)
+
 
 class DemoRpcProxyClient(RpcProxyClientBase):
-    """Print ``receive_envelope`` arguments to stdout; unmatched dict frames to stderr."""
+    """Log ``receive_envelope`` arguments; log unmatched dict frames as warnings."""
 
     def on_unmatched_message(self, msg: dict[str, Any]) -> None:
-        print(json.dumps(msg, ensure_ascii=False), file=sys.stderr, flush=True)
+        logger.warning("unmatched_message %s", json.dumps(msg, ensure_ascii=False))
 
     async def receive_envelope(
         self,
@@ -38,16 +40,19 @@ class DemoRpcProxyClient(RpcProxyClientBase):
         }
         if extra:
             payload["extra"] = extra
-        print(json.dumps(payload, ensure_ascii=False), flush=True)
+        logger.info("receive_envelope %s", json.dumps(payload, ensure_ascii=False))
         return {"ok": True}
 
 
 async def _push_demo_token(client: DemoRpcProxyClient) -> None:
     token = secrets.token_urlsafe(32)
     await client.set_state("token", token)
-    print(
-        json.dumps({"demo": "set_state", "key": "token", "token": token}, ensure_ascii=False),
-        flush=True,
+    logger.info(
+        "set_state %s",
+        json.dumps(
+            {"demo": "set_state", "key": "token", "token": token},
+            ensure_ascii=False,
+        ),
     )
 
 

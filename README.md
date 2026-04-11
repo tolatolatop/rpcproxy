@@ -37,9 +37,17 @@
 - 对端发起的 **`_ping_`**、**`_get_channel_id_`** 由基类按 fastapi-websocket-rpc 约定自动应答；
 - **`await set_state(key, value)`** 向对端发起 **`set_state`** RPC（参数为 `arguments: {key, value}`），返回对端 `response.result`；超时由构造参数 **`default_call_timeout`** 控制（默认 `30.0` 秒，`None` 表示不超时）。
 - **`await wait_until_disconnected()`** 在 **`connect`** 之后阻塞，直到读循环结束（对端关连接或 **`close()`**）；CLI demo 用其保持进程存活。
-- 可重写 **`on_unmatched_message`**，处理非入站调用、亦非本端 pending 应答的 JSON 对象（demo 将其打印到 stderr）。
+- 可重写 **`on_unmatched_message`**，处理非入站调用、亦非本端 pending 应答的 JSON 对象（demo 以 **WARNING** 级别记日志）。
 
 线格式由 **`rpcproxy.fastapi_ws_rpc`**（含 `call_request_message` 等）统一构造；**不**安装 `fastapi-websocket-rpc` 运行时依赖。
+
+### 日志
+
+- 运行任意 **`rpcproxy`** CLI 子命令时会在入口调用 **`setup_logging()`**（见 [`src/rpcproxy/logging_config.py`](src/rpcproxy/logging_config.py)）：为 **`rpcproxy`** 日志树挂载 **轮转文件**（`rpcproxy.log`）与 **stderr** 流，两者共用同一格式与级别。
+- 启动后立刻记一条 **INFO**：**`日志目录: <绝对路径>`**（便于确认落盘位置）。
+- **默认目录**：[`platformdirs`](https://pypi.org/project/platformdirs/) 的 **`user_log_dir("rpcproxy")`**（随操作系统变化，一般在用户本机数据目录下）。可用 **`RPCPROXY_LOG_DIR`** 覆盖为自定义目录。
+- **轮转**：单文件最大 **10MB**，**`backupCount=4`**（除当前文件外保留 4 个备份，即 `rpcproxy.log.1` … `.4`）。
+- **`RPCPROXY_LOG_LEVEL`**：默认 **`INFO`**，可设为 **`DEBUG`**、**`WARNING`** 等标准级别名。
 
 ## 开发环境
 
@@ -67,7 +75,7 @@ uv sync
 
 ### Demo（最小命令行）
 
-安装后可用 **`rpcproxy demo <WS_URL>`** 连接 `ws://` 或 `wss://` 服务端：实现为 **`DemoRpcProxyClient`**（继承 [`RpcProxyClientBase`](src/rpcproxy/client/base.py)），仅处理 **fastapi-websocket-rpc 线格式的 RpcMessage**。**连接成功后**会立即用 **`set_state("token", <随机 token>)`** 向对端上报一次（`secrets.token_urlsafe(32)`），并在标准输出打印一行 JSON（含 `demo` / `key` / `token`）。入站 **`receive_envelope`** 将解析后的参数打印到标准输出并回复 `{"ok": true}`；**`_ping_`** / **`_get_channel_id_`** 由基类自动应答；无法识别的 JSON 对象打印到标准错误。传输层 **WebSocket Ping** 由 `websockets` 自动应答。使用 **Ctrl+C** 或等待对端关闭连接后退出；**`finally` 中会 `close()`** 释放连接。
+安装后可用 **`rpcproxy demo <WS_URL>`** 连接 `ws://` 或 `wss://` 服务端：实现为 **`DemoRpcProxyClient`**（继承 [`RpcProxyClientBase`](src/rpcproxy/client/base.py)），仅处理 **fastapi-websocket-rpc 线格式的 RpcMessage**。**连接成功后**会立即用 **`set_state("token", <随机 token>)`** 向对端上报一次（`secrets.token_urlsafe(32)`），并以 **INFO** 记日志。入站 **`receive_envelope`** 将解析后的参数以 **INFO** 记日志并回复 `{"ok": true}`；**`_ping_`** / **`_get_channel_id_`** 由基类自动应答；无法识别的 JSON 对象以 **WARNING** 记日志。CLI 启动时会初始化日志并输出 **日志目录**（见上文「日志」）。传输层 **WebSocket Ping** 由 `websockets` 自动应答。使用 **Ctrl+C** 或等待对端关闭连接后退出；**`finally` 中会 `close()`** 释放连接。
 
 ```bash
 uv run rpcproxy demo ws://127.0.0.1:8080/rpc

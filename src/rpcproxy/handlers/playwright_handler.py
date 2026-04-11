@@ -10,6 +10,8 @@ import secrets
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from requests import Request, Session
+
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, Page, Playwright
 
@@ -40,6 +42,45 @@ def _json_safe_result(value: Any) -> Any:
     except (TypeError, ValueError):
         return str(value)
     return value
+
+
+# Keyword names accepted by :class:`requests.Request` (RPC ``command`` etc. are omitted).
+_REQUEST_KW_KEYS = frozenset(
+    {
+        "method",
+        "url",
+        "headers",
+        "files",
+        "data",
+        "params",
+        "auth",
+        "cookies",
+        "hooks",
+        "json",
+    }
+)
+
+
+def _prepare_fetch_from_request_body(
+    body: dict[str, Any],
+) -> tuple[str, dict[str, Any]] | str:
+    req_kw: dict[str, Any] = {k: body[k] for k in _REQUEST_KW_KEYS if k in body}
+    if "method" not in req_kw:
+        req_kw["method"] = "GET"
+    u = req_kw.get("url")
+    if isinstance(u, str):
+        req_kw["url"] = u.strip()
+    try:
+        prepared = Session().prepare_request(Request(**req_kw))
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
+    fetch_kw: dict[str, Any] = {
+        "method": prepared.method,
+        "headers": dict(prepared.headers),
+    }
+    if prepared.body is not None:
+        fetch_kw["data"] = prepared.body
+    return prepared.url, fetch_kw
 
 
 class PlaywrightSession:
@@ -195,45 +236,19 @@ class PlaywrightSession:
         return {"ok": True, "result": _json_safe_result(result), "page_id": page_id}
 
     async def _cmd_request(self, body: dict[str, Any]) -> dict[str, Any]:
-        url = body.get("url")
-        if not isinstance(url, str) or not url.strip():
-            return {"ok": False, "error": "'url' must be a non-empty string", "command": "request"}
-        url = url.strip()
-        method_raw = body.get("method", "GET")
-        method = method_raw.upper() if isinstance(method_raw, str) else "GET"
-        headers_in = body.get("headers")
-        headers: dict[str, str] | None = None
-        if headers_in is not None:
-            if not isinstance(headers_in, dict):
-                return {
-                    "ok": False,
-                    "error": "'headers' must be an object of string keys/values",
-                    "command": "request",
-                }
-            headers = {}
-            for k, v in headers_in.items():
-                headers[str(k)] = str(v)
+        prepared = _prepare_fetch_from_request_body(body)
+        if isinstance(prepared, str):
+            return {
+                "ok": False,
+                "error": prepared,
+                "error_type": "RequestPrepareError",
+                "command": "request",
+            }
+        fetch_url, fetch_kwargs = prepared
 
         assert self._context is not None
         req = self._context.request
-        fetch_kwargs: dict[str, Any] = {"method": method}
-        if headers:
-            fetch_kwargs["headers"] = headers
-        if "json" in body and body["json"] is not None:
-            fetch_kwargs["data"] = json.dumps(body["json"])
-            hdrs = dict(headers or {})
-            hdrs.setdefault("Content-Type", "application/json")
-            fetch_kwargs["headers"] = hdrs
-        elif "data" in body and body["data"] is not None:
-            d = body["data"]
-            if isinstance(d, (bytes, bytearray)):
-                fetch_kwargs["data"] = bytes(d)
-            elif isinstance(d, str):
-                fetch_kwargs["data"] = d
-            else:
-                fetch_kwargs["data"] = json.dumps(d)
-
-        resp = await req.fetch(url, **fetch_kwargs)
+        resp = await req.fetch(fetch_url, **fetch_kwargs)
         raw = await resp.body()
         truncated = len(raw) > _MAX_RESPONSE_BYTES
         chunk = raw[:_MAX_RESPONSE_BYTES] if truncated else raw

@@ -165,6 +165,30 @@ async def test_request_mock_fetch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_request_prepare_failure_returns_error() -> None:
+    session = PlaywrightSession()
+    fake_req = MagicMock()
+    fake_req.fetch = AsyncMock()
+
+    class FakeContext:
+        request = fake_req
+
+    async def fake_ensure() -> None:
+        session._browser = object()
+        session._playwright = object()
+        session._context = FakeContext()
+
+    session.ensure_started = fake_ensure  # type: ignore[method-assign]
+
+    out = await session.handle_command({"command": "request"})
+    assert out["ok"] is False
+    assert out["command"] == "request"
+    assert out.get("error_type") == "RequestPrepareError"
+    assert out.get("error")
+    fake_req.fetch.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_make_playwright_handler_empty_body() -> None:
     session = PlaywrightSession()
     h = make_playwright_handler(session)

@@ -58,6 +58,8 @@ class RpcProxyClientBase(ABC):
         self._ws: Any | None = None
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._reader_task: asyncio.Task[None] | None = None
+        self._relay_stash: dict[str, dict[str, Any]] = {}
+        self._relay_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     @property
     def channel_id(self) -> str:
@@ -108,6 +110,7 @@ class RpcProxyClientBase(ABC):
             if not fut.done():
                 fut.cancel()
         self._pending.clear()
+        self._relay_cleanup()
         if self._ws is not None:
             try:
                 await self._ws.close()
@@ -156,6 +159,63 @@ class RpcProxyClientBase(ABC):
         }
         return str(await self._call_remote("post_message", args))
 
+    @staticmethod
+    def _relay_receipt(args: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True, "arguments": dict(args)}
+
+    def _relay_publish(self, request_id: str, args: dict[str, Any]) -> None:
+        if not request_id.strip():
+            logger.debug("relay: skip publish, empty request_id")
+            return
+        receipt = self._relay_receipt(args)
+        waiter = self._relay_waiters.pop(request_id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(receipt)
+            return
+        self._relay_stash[request_id] = receipt
+
+    def _relay_cleanup(self) -> None:
+        for fut in self._relay_waiters.values():
+            if not fut.done():
+                fut.cancel()
+        self._relay_waiters.clear()
+        self._relay_stash.clear()
+
+    async def wait_relay_predicate(
+        self, request_id: str, timeout: float | None
+    ) -> dict[str, Any]:
+        """
+        Wait until an inbound ``receive_envelope`` RPC carries this ``request_id``,
+        or return a stashed receipt if one arrived earlier.
+
+        Returns ``{"ok": True, "arguments": {...}}`` (shallow copy of wire arguments).
+        """
+        if not request_id.strip():
+            raise ValueError("request_id must be non-empty")
+        rid = request_id
+
+        stashed = self._relay_stash.pop(rid, None)
+        if stashed is not None:
+            return stashed
+
+        if rid in self._relay_waiters:
+            raise RuntimeError("already waiting for this request_id")
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._relay_waiters[rid] = fut
+        try:
+            if timeout is None:
+                return await fut
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            raise
+        finally:
+            if self._relay_waiters.get(rid) is fut:
+                self._relay_waiters.pop(rid, None)
+                if not fut.done():
+                    fut.cancel()
+
     async def _reader_loop(self) -> None:
         assert self._ws is not None
         try:
@@ -187,6 +247,7 @@ class RpcProxyClientBase(ABC):
                 if not fut.done():
                     fut.cancel()
             self._pending.clear()
+            self._relay_cleanup()
 
     def _try_complete_pending(self, msg: dict[str, Any]) -> bool:
         resp = msg.get("response")
@@ -232,6 +293,8 @@ class RpcProxyClientBase(ABC):
         await self._ws.send(dumps_message(out))
 
     async def _invoke_receive_envelope(self, args: dict[str, Any]) -> dict[str, bool]:
+        rid = _arg_str(args, "request_id")
+        self._relay_publish(rid, args)
         body = args.get("body")
         if body is not None and not isinstance(body, dict):
             body = None

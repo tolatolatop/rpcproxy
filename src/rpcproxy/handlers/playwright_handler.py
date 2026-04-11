@@ -199,6 +199,15 @@ class PlaywrightSession:
         return out
 
     async def _cmd_open_page(self, body: dict[str, Any]) -> dict[str, Any]:
+        """在上下文中 ``new_page`` 并 ``goto``；返回 6 位十六进制 ``page_id``。
+
+        ``body`` 结构::
+
+            {
+                "command": "open_page",
+                "url": "<必填，非空字符串>",
+            }
+        """
         url = body.get("url")
         if not isinstance(url, str) or not url.strip():
             return {
@@ -228,6 +237,16 @@ class PlaywrightSession:
         return {"ok": True, "page_id": pid, "url": url}
 
     async def _cmd_execute_js(self, body: dict[str, Any]) -> dict[str, Any]:
+        """对已有页面执行 ``page.evaluate(script)``。
+
+        ``body`` 结构::
+
+            {
+                "command": "execute_js",
+                "page_id": "<必填，非空字符串，见 open_page 返回>",
+                "script": "<必填，字符串，作为浏览器内脚本>",
+            }
+        """
         page_id = body.get("page_id")
         script = body.get("script")
         if not isinstance(page_id, str) or not page_id.strip():
@@ -255,6 +274,27 @@ class PlaywrightSession:
         return {"ok": True, "result": _json_safe_result(result), "page_id": page_id}
 
     async def _cmd_request(self, body: dict[str, Any]) -> dict[str, Any]:
+        """用浏览器上下文发起 ``APIRequestContext.fetch``；请求参数由 ``requests.Request`` 解析。
+
+        ``body`` 在 ``command`` 之外，可包含与 :class:`requests.Request` 一致的字段（未列出的键会被忽略）::
+
+            {
+                "command": "request",
+                "method": "GET",
+                "url": "<必填，含 scheme，如 https://...>",
+                "headers": { "<str>": "<str>", ... },
+                "json": <任意可 JSON 序列化的对象>,
+                "data": "<str | bytes | 其它（非 str/bytes 会 json.dumps）>",
+                "params": { ... },
+                "files": ...,
+                "auth": ...,
+                "cookies": ...,
+                "hooks": ...,
+            }
+
+        省略 ``method`` 时默认为 ``GET``。``json`` / ``data`` 等可同时出现，由 ``requests`` 在 ``prepare`` 时处理。
+        解析失败时返回 ``error_type`` 为 ``RequestPrepareError`` 的响应。
+        """
         prepared = _prepare_fetch_from_request_body(body)
         if isinstance(prepared, str):
             return {
@@ -293,6 +333,15 @@ class PlaywrightSession:
             return base64.b64encode(chunk).decode("ascii"), "base64", truncated
 
     async def _cmd_close_page(self, body: dict[str, Any]) -> dict[str, Any]:
+        """关闭页面并从内部 ``page_id`` 映射中移除。
+
+        ``body`` 结构::
+
+            {
+                "command": "close_page",
+                "page_id": "<必填，非空字符串，见 open_page 返回>",
+            }
+        """
         page_id = body.get("page_id")
         if not isinstance(page_id, str) or not page_id.strip():
             return {

@@ -64,16 +64,30 @@ cd rpcproxy
 uv sync
 ```
 
+若需运行单元测试，请一并安装 **dev** 依赖组（**`pytest`**、**`pytest-asyncio`**，见 [`pyproject.toml`](pyproject.toml) 中 **`[dependency-groups]`**）：
+
+```bash
+uv sync --group dev
+```
+
 ### 常用命令
 
 | 操作 | 命令 |
 |------|------|
 | 同步依赖（含可编辑安装本包） | `uv sync` |
+| 同步并包含开发与测试依赖 | `uv sync --group dev` |
 | 新增依赖 | `uv add <package>` |
+| 新增仅用于开发的依赖 | `uv add --group dev <package>` |
 | 在虚拟环境中执行命令 | `uv run python ...` |
 | 运行测试 | `uv run --group dev pytest` |
 
 可选：使用 `uv python pin <version>` 固定解释器版本并将 `.python-version` 纳入版本控制。
+
+### 测试
+
+- 配置见 **`[tool.pytest.ini_options]`**（**`asyncio_mode = auto`**，测试目录 **`tests/`**）。
+- **[`tests/test_client_base.py`](tests/test_client_base.py)** 使用 **`unittest.mock.patch`** 将 **`rpcproxy.client.base.websockets.connect`** 替换为 **`AsyncMock`**，由假 **`recv` / `send`**（队列与列表）驱动读循环，无需真实网络即可覆盖 **`connect`**、**`set_state`**、**`post_message`**、入站 **`receive_envelope`**、**`wait_relay_predicate`** 与 **`close`** 清理等行为。
+- 仅跑该文件：`uv run --group dev pytest tests/test_client_base.py -v`。
 
 ### Demo（最小命令行）
 
@@ -94,9 +108,10 @@ rpcproxy/
 │   └── rpcproxy/
 │       ├── fastapi_ws_rpc/   # 与 fastapi-websocket-rpc 一致的 RpcMessage 线格式
 │       ├── client/           # RpcProxyClientBase
-│       ├── demo_loop.py
+│       ├── demo_loop.py      # DemoRpcProxyClient
 │       └── cli.py
 └── tests/
+    └── test_client_base.py   # RpcProxyClientBase（mock websockets.connect）
 ```
 
 ## 规范参考

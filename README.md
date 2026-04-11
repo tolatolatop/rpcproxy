@@ -93,6 +93,7 @@ uv sync --group dev
 | 新增仅用于开发的依赖 | `uv add --group dev <package>` |
 | 在虚拟环境中执行命令 | `uv run python ...` |
 | 运行测试 | `uv run --group dev pytest` |
+| 一次性 ``post_message`` + ``wait_relay_predicate``（JSON 输出） | `uv run rpcproxy post WS_URL -r R --body '{}'` |
 
 可选：使用 `uv python pin <version>` 固定解释器版本并将 `.python-version` 纳入版本控制。
 
@@ -102,6 +103,7 @@ uv sync --group dev
 - **[`tests/test_client_base.py`](tests/test_client_base.py)** 使用 **`unittest.mock.patch`** 将 **`rpcproxy.client.base.websockets.connect`** 替换为 **`AsyncMock`**，由假 **`recv` / `send`**（队列与列表）驱动读循环，无需真实网络即可覆盖 **`connect`**、**`set_state`**、**`post_message`**、入站 **`receive_envelope`**、**`wait_relay_predicate`** 与 **`close`** 清理等行为。
 - **[`tests/test_handler_client.py`](tests/test_handler_client.py)** 覆盖 **`HandlerPostMessageClient`**（ACK 早于 **`post_message`**、读循环不阻塞、**`skip_post`**、空 **`request_id`** 拒绝、**`on_handler_exception`** 子类扩展、**`max_inflight`**）。
 - **[`tests/test_demo_loop.py`](tests/test_demo_loop.py)** 覆盖 **`demo_echo_envelope_handler`**（**`is_echo`**、body 浅拷贝）与 **`DemoRpcProxyClient`** 的 **`post_message`** echo 往返。
+- **[`tests/test_cli_post.py`](tests/test_cli_post.py)** 覆盖 **`rpcproxy post`** 的 **`--body`** / **`--timeout`** 参数校验（不连真实 WebSocket）。
 - 仅跑基类测试：`uv run --group dev pytest tests/test_client_base.py -v`。
 
 ### Demo（最小命令行）
@@ -110,6 +112,12 @@ uv sync --group dev
 
 ```bash
 uv run rpcproxy demo ws://127.0.0.1:8080/rpc
+```
+
+**`rpcproxy post`**：使用最小 **`RpcProxyClientBase`** 子类连接 **`WS_URL`**，先启动 **`wait_relay_predicate(request_id, timeout)`** 等待，再发送 **`post_message(receiver, body, request_id)`**（与 relay 使用同一 **`request_id`**）。**`--request-id`** 可省略，省略时自动生成 UUID hex。标准输出为一行 **JSON**：**`request_id`**、**`post_message`**（RPC 返回字符串）、**`relay`**（**`{"ok": true, "arguments": {...}}`**）。**`--body`** 须为 **JSON object** 字符串（默认 **`{}`**）；**`--timeout`** 对 **`post_message`** 与 **`wait_relay_predicate`** 各自生效（默认 **`30`** 秒，须为正数），任一环节超时则 **stderr** 报错并以非零码退出。示例（PowerShell 需注意引号转义）：
+
+```bash
+uv run rpcproxy post ws://127.0.0.1:8080/rpc -r peer --body "{\"msg\":\"hi\"}" --timeout 10
 ```
 
 ## 项目结构
@@ -128,7 +136,8 @@ rpcproxy/
 └── tests/
     ├── test_client_base.py      # RpcProxyClientBase（mock connect）
     ├── test_handler_client.py   # HandlerPostMessageClient
-    └── test_demo_loop.py        # demo echo / DemoRpcProxyClient
+    ├── test_demo_loop.py        # demo echo / DemoRpcProxyClient
+    └── test_cli_post.py         # cli post 参数校验
 ```
 
 ## 规范参考

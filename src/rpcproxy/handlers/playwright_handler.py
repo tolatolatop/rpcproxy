@@ -124,19 +124,25 @@ class PlaywrightSession:
                 try:
                     await self._context.close()
                 except Exception:
-                    logger.debug("playwright session: context.close failed", exc_info=True)
+                    logger.debug(
+                        "playwright session: context.close failed", exc_info=True
+                    )
                 self._context = None
             if self._browser is not None:
                 try:
                     await self._browser.close()
                 except Exception:
-                    logger.debug("playwright session: browser.close failed", exc_info=True)
+                    logger.debug(
+                        "playwright session: browser.close failed", exc_info=True
+                    )
                 self._browser = None
             if self._playwright is not None:
                 try:
                     await self._playwright.stop()
                 except Exception:
-                    logger.debug("playwright session: playwright.stop failed", exc_info=True)
+                    logger.debug(
+                        "playwright session: playwright.stop failed", exc_info=True
+                    )
                 self._playwright = None
 
     async def handle_command(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -151,7 +157,12 @@ class PlaywrightSession:
         try:
             await self.ensure_started()
         except RuntimeError as e:
-            return {"ok": False, "error": str(e), "error_type": "RuntimeError", "command": cmd}
+            return {
+                "ok": False,
+                "error": str(e),
+                "error_type": "RuntimeError",
+                "command": cmd,
+            }
         except Exception as e:
             logger.exception("playwright session: ensure_started failed")
             return {
@@ -190,7 +201,11 @@ class PlaywrightSession:
     async def _cmd_open_page(self, body: dict[str, Any]) -> dict[str, Any]:
         url = body.get("url")
         if not isinstance(url, str) or not url.strip():
-            return {"ok": False, "error": "'url' must be a non-empty string", "command": "open_page"}
+            return {
+                "ok": False,
+                "error": "'url' must be a non-empty string",
+                "command": "open_page",
+            }
         url = url.strip()
         assert self._context is not None
         async with self._lock:
@@ -222,7 +237,11 @@ class PlaywrightSession:
                 "command": "execute_js",
             }
         if not isinstance(script, str):
-            return {"ok": False, "error": "'script' must be a string", "command": "execute_js"}
+            return {
+                "ok": False,
+                "error": "'script' must be a string",
+                "command": "execute_js",
+            }
         page_id = page_id.strip()
         async with self._lock:
             page = self._pages.get(page_id)
@@ -250,14 +269,7 @@ class PlaywrightSession:
         req = self._context.request
         resp = await req.fetch(fetch_url, **fetch_kwargs)
         raw = await resp.body()
-        truncated = len(raw) > _MAX_RESPONSE_BYTES
-        chunk = raw[:_MAX_RESPONSE_BYTES] if truncated else raw
-        try:
-            body_text = chunk.decode("utf-8")
-            body_encoding = "utf-8"
-        except UnicodeDecodeError:
-            body_text = base64.b64encode(chunk).decode("ascii")
-            body_encoding = "base64"
+        body_text, body_encoding, truncated = self._encode_limited_response_body(raw)
 
         hdr_map: dict[str, str] = {}
         for k, v in resp.headers.items():
@@ -271,6 +283,14 @@ class PlaywrightSession:
             "body_encoding": body_encoding,
             "truncated": truncated,
         }
+
+    def _encode_limited_response_body(self, raw: bytes) -> tuple[str, str, bool]:
+        truncated = len(raw) > _MAX_RESPONSE_BYTES
+        chunk = raw[:_MAX_RESPONSE_BYTES] if truncated else raw
+        try:
+            return chunk.decode("utf-8"), "utf-8", truncated
+        except UnicodeDecodeError:
+            return base64.b64encode(chunk).decode("ascii"), "base64", truncated
 
     async def _cmd_close_page(self, body: dict[str, Any]) -> dict[str, Any]:
         page_id = body.get("page_id")

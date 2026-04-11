@@ -13,6 +13,11 @@ dependencies = [
     "websockets>=12",
 ]
 
+[project.optional-dependencies]
+playwright = [
+    "playwright>=1.40",
+]
+
 [project.scripts]
 rpcproxy = "rpcproxy.cli:main"
 
@@ -25,6 +30,7 @@ packages = ["src/rpcproxy"]
 
 [dependency-groups]
 dev = [
+    "playwright>=1.40",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
 ]

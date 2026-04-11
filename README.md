@@ -56,6 +56,42 @@
 - **`max_inflight`**：默认 **`8`**，始终用 **`asyncio.Semaphore`** 限制并发 pipeline 数（须 **`>= 1`**），减轻对端与事件循环压力。
 - 关闭连接时**已提交的**后台任务可能仍短暂运行或在 **`post_message`** 上失败，调用方应 **`await close()`** 并容忍收尾日志；与基类相同，仍可使用 **`wait_relay_predicate`** 与有界 stash。
 
+### Playwright Handler（可选）
+
+包内 **`rpcproxy.handlers`** 提供基于 [Playwright](https://playwright.dev/python/) 的 **`EnvelopeHandler`**：默认通过 Chromium 的 **`msedge`** 通道启动 **Edge**，默认 **无头**（`headless=True`）。**不**随核心依赖安装；需额外安装可选依赖并安装浏览器二进制：
+
+```bash
+uv sync --extra playwright
+playwright install msedge
+```
+
+（或 `pip install 'rpcproxy[playwright]'` 后同样执行 `playwright install msedge`。）
+
+对端通过 **`receive_envelope`** 推送的 **`body`** 须为对象，且包含 **`command`**（字符串）。成功或失败时，本端经 **`post_message`** 回传的 **`body`** 均含结构化字段（至少 **`ok`**；成功时通常带 **`command`** 回显）。
+
+| `command` | 说明 | 主要字段 | 成功时 `post_message` body 要点 |
+|-----------|------|----------|----------------------------------|
+| `open_page` | 新开页并导航 | **`url`**（必填） | **`ok: true`**, **`page_id`**, **`url`** |
+| `execute_js` | `page.evaluate` | **`page_id`**, **`script`**（必填） | **`ok: true`**, **`result`**（尽量 JSON 可序列化，否则转字符串） |
+| `request` | 使用 **`BrowserContext.request`** 发 HTTP（非页面 DOM） | **`url`**；可选 **`method`**（默认 **`GET`**）、**`headers`**、**`json`** 或 **`data`** | **`ok: true`**, **`status`**, **`headers`**, **`body`**, **`body_encoding`**（`utf-8` 或 `base64`），**`truncated`**（响应体超过 256KiB 时截断） |
+| `close_page` | 关闭页并从映射中移除 | **`page_id`**（必填） | **`ok: true`**, **`page_id`** |
+
+未知命令、缺字段或 Playwright 报错时：**`ok: false`**, **`error`**, 可选 **`error_type`**。会话内对页面映射使用 **`asyncio.Lock`**，与 **`max_inflight`** 一并降低竞态。
+
+**接入方式**：使用 **`make_playwright_handler(session)`** 配合自建 **`PlaywrightSession`**，或直接使用 **`PlaywrightRpcProxyClient`**（在 **`await close()`** 时会先关闭 WebSocket 再 **`await PlaywrightSession.close()`** 释放浏览器）。进程退出前务必 **`await client.close()`**，否则浏览器进程可能残留。
+
+```python
+from rpcproxy.handlers import PlaywrightRpcProxyClient
+
+async def main():
+    client = PlaywrightRpcProxyClient()
+    try:
+        await client.connect("ws://127.0.0.1:8080/rpc")
+        await client.wait_until_disconnected()
+    finally:
+        await client.close()
+```
+
 ### 日志
 
 - 运行任意 **`rpcproxy`** CLI 子命令时会在入口调用 **`setup_logging()`**（见 [`src/rpcproxy/logging_config.py`](src/rpcproxy/logging_config.py)）：为 **`rpcproxy`** 日志树挂载 **轮转文件**（`rpcproxy.log`）与 **stderr** 流，两者共用同一格式与级别。
@@ -104,6 +140,7 @@ uv sync --group dev
 - **[`tests/test_handler_client.py`](tests/test_handler_client.py)** 覆盖 **`HandlerPostMessageClient`**（ACK 早于 **`post_message`**、读循环不阻塞、**`skip_post`**、空 **`request_id`** 拒绝、**`on_handler_exception`** 子类扩展、**`max_inflight`**）。
 - **[`tests/test_demo_loop.py`](tests/test_demo_loop.py)** 覆盖 **`demo_echo_envelope_handler`**（**`is_echo`**、body 浅拷贝）与 **`DemoRpcProxyClient`** 的 **`post_message`** echo 往返。
 - **[`tests/test_cli_post.py`](tests/test_cli_post.py)** 覆盖 **`rpcproxy post`** 的 **`--body`** / **`--timeout`** 参数校验（不连真实 WebSocket）。
+- **[`tests/test_playwright_handler.py`](tests/test_playwright_handler.py)** 覆盖 **`PlaywrightSession.handle_command`** 与 **`make_playwright_handler`**（**mock** 浏览器上下文，不启动真实 Edge）。
 - 仅跑基类测试：`uv run --group dev pytest tests/test_client_base.py -v`。
 
 ### Demo（最小命令行）
@@ -131,13 +168,15 @@ rpcproxy/
 │   └── rpcproxy/
 │       ├── fastapi_ws_rpc/   # 与 fastapi-websocket-rpc 一致的 RpcMessage 线格式
 │       ├── client/           # RpcProxyClientBase、HandlerPostMessageClient、envelope_types
+│       ├── handlers/         # 可选 Handler（Playwright 等）
 │       ├── demo_loop.py      # DemoRpcProxyClient
 │       └── cli.py
 └── tests/
     ├── test_client_base.py      # RpcProxyClientBase（mock connect）
     ├── test_handler_client.py   # HandlerPostMessageClient
     ├── test_demo_loop.py        # demo echo / DemoRpcProxyClient
-    └── test_cli_post.py         # cli post 参数校验
+    ├── test_cli_post.py         # cli post 参数校验
+    └── test_playwright_handler.py
 ```
 
 ## 规范参考

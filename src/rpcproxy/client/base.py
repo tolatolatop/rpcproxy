@@ -49,7 +49,7 @@ def _arg_str(args: dict[str, Any], key: str, default: str = "") -> str:
 class RpcProxyClientBase(ABC):
     """
     Single-reader WebSocket client: handles inbound ``_ping_``, ``_get_channel_id_``,
-    and abstract ``receive_envelope``; outbound ``set_state`` RPC.
+    and abstract ``receive_envelope``; outbound ``set_state`` / ``post_message`` RPC.
     """
 
     def __init__(self, *, default_call_timeout: float | None = 30.0) -> None:
@@ -115,16 +115,14 @@ class RpcProxyClientBase(ABC):
                 logger.debug("close websocket", exc_info=True)
             self._ws = None
 
-    async def set_state(self, key: str, value: Any) -> Any:
+    async def _call_remote(self, method: str, arguments: dict[str, Any]) -> Any:
         if self._ws is None:
             raise RuntimeError("not connected")
         loop = asyncio.get_running_loop()
         call_id = uuid.uuid4().hex
         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending[call_id] = fut
-        payload = call_request_message(
-            "set_state", {"key": key, "value": value}, call_id
-        )
+        payload = call_request_message(method, arguments, call_id)
         try:
             await self._ws.send(dumps_message(payload))
             if self._default_call_timeout is None:
@@ -140,6 +138,23 @@ class RpcProxyClientBase(ABC):
             self._pending.pop(call_id, None)
             if not fut.done():
                 fut.cancel()
+
+    async def set_state(self, key: str, value: Any) -> Any:
+        return await self._call_remote("set_state", {"key": key, "value": value})
+
+    async def post_message(
+        self,
+        receiver: str = "",
+        body: dict[str, Any] | None = None,
+        request_id: str = "",
+    ) -> str:
+        """Call remote ``post_message``; ``body`` defaults to ``{}`` when omitted."""
+        args: dict[str, Any] = {
+            "receiver": receiver,
+            "request_id": request_id,
+            "body": body if body is not None else {},
+        }
+        return str(await self._call_remote("post_message", args))
 
     async def _reader_loop(self) -> None:
         assert self._ws is not None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sys
 from typing import Any
 
@@ -41,10 +42,20 @@ class DemoRpcProxyClient(RpcProxyClientBase):
         return {"ok": True}
 
 
+async def _push_demo_token(client: DemoRpcProxyClient) -> None:
+    token = secrets.token_urlsafe(32)
+    await client.set_state("token", token)
+    print(
+        json.dumps({"demo": "set_state", "key": "token", "token": token}, ensure_ascii=False),
+        flush=True,
+    )
+
+
 async def run_demo(uri: str) -> None:
     client = DemoRpcProxyClient(default_call_timeout=None)
     try:
         await client.connect(uri)
+        await _push_demo_token(client)
         await client.wait_until_disconnected()
     finally:
         await client.close()

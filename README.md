@@ -67,7 +67,7 @@ uv sync
 
 ### Demo（最小命令行）
 
-安装后可用 **`rpcproxy demo <WS_URL>`** 连接 `ws://` 或 `wss://` 服务端：实现为 **`DemoRpcProxyClient`**（继承 [`RpcProxyClientBase`](src/rpcproxy/client/base.py)），仅处理 **fastapi-websocket-rpc 线格式的 RpcMessage**。入站 **`receive_envelope`** 将解析后的参数打印到标准输出并回复 `{"ok": true}`；**`_ping_`** / **`_get_channel_id_`** 由基类自动应答；无法识别的 JSON 对象（例如仅有 `response` 且未匹配本端 pending）打印到标准错误。传输层 **WebSocket Ping** 由 `websockets` 自动应答。使用 **Ctrl+C** 或等待对端关闭连接后退出；**`finally` 中会 `close()`** 释放连接。
+安装后可用 **`rpcproxy demo <WS_URL>`** 连接 `ws://` 或 `wss://` 服务端：实现为 **`DemoRpcProxyClient`**（继承 [`RpcProxyClientBase`](src/rpcproxy/client/base.py)），仅处理 **fastapi-websocket-rpc 线格式的 RpcMessage**。**连接成功后**会立即用 **`set_state("token", <随机 token>)`** 向对端上报一次（`secrets.token_urlsafe(32)`），并在标准输出打印一行 JSON（含 `demo` / `key` / `token`）。入站 **`receive_envelope`** 将解析后的参数打印到标准输出并回复 `{"ok": true}`；**`_ping_`** / **`_get_channel_id_`** 由基类自动应答；无法识别的 JSON 对象打印到标准错误。传输层 **WebSocket Ping** 由 `websockets` 自动应答。使用 **Ctrl+C** 或等待对端关闭连接后退出；**`finally` 中会 `close()`** 释放连接。
 
 ```bash
 uv run rpcproxy demo ws://127.0.0.1:8080/rpc

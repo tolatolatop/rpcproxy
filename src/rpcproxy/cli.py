@@ -21,7 +21,8 @@ def main() -> None:
 def demo_cmd(url: str) -> None:
     """Connect to WS_URL using RpcProxyClientBase (fastapi_websocket_rpc RpcMessage).
 
-    Inbound ``receive_envelope`` arguments are printed; ``_ping_`` / ``_get_channel_id_``
+    After connect, sends one ``set_state`` with a random ``token``. Inbound
+    ``receive_envelope`` arguments are printed; ``_ping_`` / ``_get_channel_id_``
     are answered by the base class. Unmatched JSON objects go to stderr. Press Ctrl+C to exit.
     """
     try:

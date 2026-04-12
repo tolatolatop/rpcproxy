@@ -54,6 +54,8 @@ class DemoRpcProxyClient(HandlerPostMessageClient):
         super().__init__(demo_echo_envelope_handler, default_call_timeout=None, **kwargs)
 
     def on_unmatched_message(self, msg: dict[str, Any]) -> None:
+        if msg.get("kind") == "assigned_id":
+            return
         logger.warning("unmatched_message %s", json.dumps(msg, ensure_ascii=False))
 
 

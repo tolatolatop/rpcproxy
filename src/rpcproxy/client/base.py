@@ -47,6 +47,17 @@ def _arg_str(args: dict[str, Any], key: str, default: str = "") -> str:
     return str(v)
 
 
+def _log_assigned_id_if_present(client_label: str, payload: dict[str, Any]) -> None:
+    """If ``payload`` is an ``assigned_id`` notice, log the server ``client_id``."""
+    if payload.get("kind") != "assigned_id":
+        return
+    cid = payload.get("client_id")
+    if cid is None:
+        logger.warning("%s assigned_id message missing client_id", client_label)
+    else:
+        logger.info("%s assigned_id client_id=%s", client_label, cid)
+
+
 class RpcProxyClientBase(ABC):
     """
     Single-reader WebSocket client: handles inbound ``_ping_``, ``_get_channel_id_``,
@@ -256,6 +267,7 @@ class RpcProxyClientBase(ABC):
                 if is_pending_rpc_call(msg):
                     await self._dispatch_inbound(msg)
                     continue
+                _log_assigned_id_if_present(type(self).__name__, msg)
                 self.on_unmatched_message(msg)
         except asyncio.CancelledError:
             pass
@@ -310,6 +322,7 @@ class RpcProxyClientBase(ABC):
         await self._ws.send(dumps_message(out))
 
     async def _invoke_receive_envelope(self, args: dict[str, Any]) -> dict[str, bool]:
+        _log_assigned_id_if_present(type(self).__name__, args)
         rid = _arg_str(args, "request_id")
         self._relay_publish(rid, args)
         body = args.get("body")

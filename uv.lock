@@ -338,7 +338,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.28" },
     { name = "websockets", specifier = ">=12" },
 ]
-provides-extras = ["playwright"]
+provides-extras = ["playwright", "adb"]
 
 [package.metadata.requires-dev]
 dev = [

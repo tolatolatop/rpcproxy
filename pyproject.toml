@@ -18,6 +18,7 @@ dependencies = [
 playwright = [
     "playwright>=1.40",
 ]
+adb = []
 
 [project.scripts]
 rpcproxy = "rpcproxy.cli:main"

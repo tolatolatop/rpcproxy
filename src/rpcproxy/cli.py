@@ -12,7 +12,9 @@ import click
 
 from rpcproxy.client.base import RpcProxyClientBase
 from rpcproxy.demo_loop import run_demo
+from rpcproxy.handlers.playwright_handler import PlaywrightHandlerConfig
 from rpcproxy.logging_config import setup_logging
+from rpcproxy.playwright_loop import run_playwright
 
 
 class _PostCliClient(RpcProxyClientBase):
@@ -56,6 +58,14 @@ def _timeout_option_callback(
 ) -> float:
     if value <= 0:
         raise click.BadParameter("must be positive")
+    return value
+
+
+def _max_inflight_option_callback(
+    _ctx: click.Context, _param: click.Parameter, value: int
+) -> int:
+    if value < 1:
+        raise click.BadParameter("must be >= 1")
     return value
 
 
@@ -111,6 +121,51 @@ def demo_cmd(url: str) -> None:
         asyncio.run(run_demo(url))
     except KeyboardInterrupt:
         pass
+
+
+@main.command("playwright")
+@click.argument("url")
+@click.option(
+    "--channel",
+    default="msedge",
+    show_default=True,
+    help="Chromium channel passed to Playwright launch",
+)
+@click.option(
+    "--headless/--no-headless",
+    default=True,
+    show_default=True,
+    help="Run browser headless",
+)
+@click.option(
+    "--max-inflight",
+    type=int,
+    default=8,
+    show_default=True,
+    help="Max concurrent receive_envelope handler runs",
+    callback=_max_inflight_option_callback,
+)
+def playwright_cmd(url: str, channel: str, headless: bool, max_inflight: int) -> None:
+    """Connect with PlaywrightRpcProxyClient; inbound bodies use command open_page / request / …."""
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        click.echo(
+            "error: playwright is not installed; use: pip install 'rpcproxy[playwright]' "
+            "then: playwright install msedge",
+            err=True,
+        )
+        sys.exit(1)
+    try:
+        cfg = PlaywrightHandlerConfig(channel=channel, headless=headless)
+        asyncio.run(
+            run_playwright(url, playwright_config=cfg, max_inflight=max_inflight)
+        )
+    except KeyboardInterrupt:
+        raise SystemExit(130) from None
+    except Exception as e:
+        click.echo(f"error: {e}", err=True)
+        sys.exit(1)
 
 
 @main.command("post")

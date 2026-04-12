@@ -1,0 +1,5 @@
+{
+  "command": "request",
+  "method": "GET",
+  "url": "https://www.google.com/"
+}

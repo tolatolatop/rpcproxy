@@ -22,6 +22,16 @@ from rpcproxy.fastapi_ws_rpc import (
     loads_message,
     response_message,
 )
+from rpcproxy.client.chunking import (
+    AutoPostMessageResult,
+    ChunkReassembler,
+    ChunkSendReport,
+    DEFAULT_AUTO_CHUNK_THRESHOLD,
+    encode_chunked_bodies,
+    estimate_body_wire_bytes,
+    is_chunk_envelope,
+    make_chunk_transport_request_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +79,7 @@ class RpcProxyClientBase(ABC):
         *,
         default_call_timeout: float | None = 30.0,
         relay_stash_max_size: int = 256,
+        chunk_reassembly_max_pending: int = 128,
     ) -> None:
         self._channel_id: str = uuid.uuid4().hex
         self._default_call_timeout = default_call_timeout
@@ -78,6 +89,9 @@ class RpcProxyClientBase(ABC):
         self._reader_task: asyncio.Task[None] | None = None
         self._relay_stash: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._relay_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._chunk_reassembler = ChunkReassembler(
+            max_pending=chunk_reassembly_max_pending
+        )
 
     @property
     def channel_id(self) -> str:
@@ -129,6 +143,7 @@ class RpcProxyClientBase(ABC):
                 fut.cancel()
         self._pending.clear()
         self._relay_cleanup()
+        self._chunk_reassembler.clear()
         if self._ws is not None:
             try:
                 await self._ws.close()
@@ -176,6 +191,76 @@ class RpcProxyClientBase(ABC):
             "body": body if body is not None else {},
         }
         return str(await self._call_remote("post_message", args))
+
+    async def post_message_chunked(
+        self,
+        receiver: str = "",
+        body: dict[str, Any] | None = None,
+        request_id: str = "",
+        *,
+        chunk_size: int = 256 * 1024,
+        compress: bool = False,
+    ) -> ChunkSendReport:
+        """Split one large JSON object into multiple ``post_message`` RPC calls."""
+        batch = encode_chunked_bodies(
+            body,
+            request_id=request_id,
+            chunk_size=chunk_size,
+            compress=compress,
+        )
+        transport_request_ids = make_chunk_transport_request_ids(
+            transfer_id=batch.transfer_id,
+            request_id=request_id,
+            chunk_count=batch.chunk_count,
+        )
+        responses: list[str] = []
+        for transport_request_id, chunk_body in zip(
+            transport_request_ids, batch.bodies, strict=True
+        ):
+            responses.append(
+                await self.post_message(
+                    receiver=receiver,
+                    body=chunk_body,
+                    request_id=transport_request_id,
+                )
+            )
+        return ChunkSendReport(
+            transfer_id=batch.transfer_id,
+            request_id=request_id,
+            chunk_count=batch.chunk_count,
+            transport_request_ids=transport_request_ids,
+            responses=responses,
+        )
+
+    async def post_message_auto(
+        self,
+        receiver: str = "",
+        body: dict[str, Any] | None = None,
+        request_id: str = "",
+        *,
+        auto_chunk_threshold: int = DEFAULT_AUTO_CHUNK_THRESHOLD,
+        chunk_size: int = 256 * 1024,
+        compress: bool = False,
+    ) -> AutoPostMessageResult:
+        """Send directly below threshold, otherwise fall back to chunked transport."""
+        if auto_chunk_threshold < 1:
+            raise ValueError("auto_chunk_threshold must be >= 1")
+        body_wire_bytes = estimate_body_wire_bytes(body)
+        if body_wire_bytes < auto_chunk_threshold:
+            response = await self.post_message(
+                receiver=receiver,
+                body=body,
+                request_id=request_id,
+            )
+            return AutoPostMessageResult(chunked=False, response=response)
+        chunk_report = await self.post_message_chunked(
+            receiver=receiver,
+            body=body,
+            request_id=request_id,
+            chunk_size=chunk_size,
+            compress=compress,
+        )
+        return AutoPostMessageResult(chunked=True, chunk_report=chunk_report)
 
     @staticmethod
     def _relay_receipt(args: dict[str, Any]) -> dict[str, Any]:
@@ -323,19 +408,40 @@ class RpcProxyClientBase(ABC):
 
     async def _invoke_receive_envelope(self, args: dict[str, Any]) -> dict[str, bool]:
         _log_assigned_id_if_present(type(self).__name__, args)
-        rid = _arg_str(args, "request_id")
-        self._relay_publish(rid, args)
-        body = args.get("body")
+        normalized_args = dict(args)
+        body = normalized_args.get("body")
+        if isinstance(body, dict) and is_chunk_envelope(body):
+            try:
+                assembled = self._chunk_reassembler.push(body)
+            except Exception:
+                logger.warning("invalid chunked receive_envelope body", exc_info=True)
+                return {"ok": False}
+            if assembled is None:
+                return {"ok": True}
+            normalized_args["body"] = assembled.body
+            if assembled.request_id.strip():
+                normalized_args["request_id"] = assembled.request_id
+            normalized_args["chunk_transfer_id"] = assembled.transfer_id
+            normalized_args["chunk_count"] = assembled.chunk_count
+            normalized_args["chunk_total_bytes"] = assembled.total_bytes
+            normalized_args["chunk_sha256"] = assembled.sha256
+            normalized_args["chunk_content_encoding"] = assembled.content_encoding
+
+        rid = _arg_str(normalized_args, "request_id")
+        self._relay_publish(rid, normalized_args)
+        body = normalized_args.get("body")
         if body is not None and not isinstance(body, dict):
             body = None
-        extra = {k: v for k, v in args.items() if k not in _RECEIVE_ENVELOPE_KEYS}
+        extra = {
+            k: v for k, v in normalized_args.items() if k not in _RECEIVE_ENVELOPE_KEYS
+        }
         return await self.receive_envelope(
-            message_type=_arg_str(args, "message_type"),
-            kind=_arg_str(args, "kind"),
-            client_id=_arg_str(args, "client_id"),
-            sender=_arg_str(args, "sender"),
-            receiver=_arg_str(args, "receiver"),
+            message_type=_arg_str(normalized_args, "message_type"),
+            kind=_arg_str(normalized_args, "kind"),
+            client_id=_arg_str(normalized_args, "client_id"),
+            sender=_arg_str(normalized_args, "sender"),
+            receiver=_arg_str(normalized_args, "receiver"),
             body=body,
-            request_id=_arg_str(args, "request_id"),
+            request_id=_arg_str(normalized_args, "request_id"),
             **extra,
         )

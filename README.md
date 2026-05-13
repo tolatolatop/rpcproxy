@@ -37,8 +37,30 @@
 - 对端发起的 **`_ping_`**、**`_get_channel_id_`** 由基类按 fastapi-websocket-rpc 约定自动应答；
 - **`await set_state(key, value)`** 向对端发起 **`set_state`** RPC（参数为 `arguments: {key, value}`），返回对端 `response.result`；超时由构造参数 **`default_call_timeout`** 控制（默认 `30.0` 秒，`None` 表示不超时）。
 - **`await post_message(receiver="", body=None, request_id="")`** 向对端发起 **`post_message`** RPC；`body` 为 `None` 时按 `{}` 发送；返回值对对端 `result` 做 **`str()`** 以匹配 `-> str`。若对端随后以 **`receive_envelope`** 回推同一条 **`request_id`**，基类会在调用子类 **`receive_envelope`** 之前登记 **「已送达回执」**；本端可用 **`await wait_relay_predicate(request_id, timeout)`** 等待该回执（`timeout` 为 **`None`** 表示无限等待，与 **`set_state`** 一致）。
+- **`await post_message_auto(receiver="", body=None, request_id="", auto_chunk_threshold=256*1024, chunk_size=256*1024, compress=False)`** 是推荐默认接口：先估算 `body` 作为 UTF-8 JSON 文本的字节数；**小于 256KiB** 时直接走普通 `post_message`，**达到/超过 256KiB** 时自动切到 `post_message_chunked`。返回值为 `AutoPostMessageResult`：`chunked=False` 时看 `response`，`chunked=True` 时看 `chunk_report`。之所以选 **256KiB** 作为默认阈值，是因为它足够保守，能显著降低被 WebSocket / 反向代理 / 上游消息大小限制拦截的概率，同时对普通 JSON 命令又不会过早分片。
+- **`await post_message_chunked(receiver="", body=None, request_id="", chunk_size=256*1024, compress=False)`** 用于发送大 JSON object：先把原始 `body` 序列化为 UTF-8 JSON（可选 gzip 压缩），再拆成多个 `post_message`。每片 `body` 均为下列结构，其中 **`data_b64`** 为当前分片字节的 Base64，**`request_id`** 为业务级原始请求号，传输层实际 `request_id` 则自动变成 `原request_id#chunk:i/N`：
+
+  ```json
+  {
+    "__rpcproxy_chunk__": {
+      "version": 1,
+      "transfer_id": "7f6c...",
+      "request_id": "job-42",
+      "index": 0,
+      "count": 4,
+      "total_bytes": 523001,
+      "sha256": "<assembled-bytes sha256>",
+      "content_type": "application/json",
+      "content_encoding": "identity"
+    },
+    "data_b64": "eyJiaWciOiAiLi4uIn0="
+  }
+  ```
+
+  对端若也使用当前版本 `rpcproxy`，会在 **`receive_envelope`** 进入业务处理前自动按 `transfer_id` 聚合、校验 `sha256`、解压（若 `gzip`）并恢复出原始 `body`；中间分片只 ACK、不下发给业务 handler。组装完成后，业务侧拿到的是**完整原始 body**，同时额外可见 `chunk_transfer_id`、`chunk_count`、`chunk_total_bytes`、`chunk_sha256`、`chunk_content_encoding` 这些扩展字段。
 - **`wait_relay_predicate`** 成功时返回 **`{"ok": True, "arguments": {...}}`**：其中 **`arguments`** 为入站 RPC **`arguments`** 的浅拷贝（业务字段如 **`body`**、**`message_type`** 等在其中读取）；同一 **`request_id`** 仅允许一个并发等待，第二个等待者会触发 **`RuntimeError`**。连接关闭或读循环结束时，未完成的等待会被 **`cancel`**，stash 会清空。
 - 尚未被取走的回执缓存在 **有界 LRU stash** 中，由构造参数 **`relay_stash_max_size`** 控制条目上限（默认 **`256`**）。超过上限时**最久未更新**的条目会被丢弃（**`DEBUG`** 日志含被驱逐的 **`request_id`**）；**`relay_stash_max_size=0`** 表示禁用 stash，仅当已调用 **`wait_relay_predicate`** 阻塞等待时才会通过 Future 收到回执（「信封先到、后调用等待」不再成立）。同一 **`request_id`** 再次入站会覆盖并视为最近使用。
+
 - **`await wait_until_disconnected()`** 在 **`connect`** 之后阻塞，直到读循环结束（对端关连接或 **`close()`**）；CLI demo 用其保持进程存活。
 - 可重写 **`on_unmatched_message`**，处理非入站调用、亦非本端 pending 应答的 JSON 对象（demo 以 **WARNING** 级别记日志）。
 

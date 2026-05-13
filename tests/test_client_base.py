@@ -8,6 +8,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from rpcproxy.client import (
+    CHUNK_DATA_KEY,
+    CHUNK_MARKER,
+    DEFAULT_AUTO_CHUNK_THRESHOLD,
+    encode_chunked_bodies,
+)
 from rpcproxy.client.base import RpcProxyClientBase
 from rpcproxy.fastapi_ws_rpc import (
     dumps_message,
@@ -143,6 +149,106 @@ async def test_post_message_body_none_sends_empty_dict(connect_patch):
     await client.close()
 
 
+async def test_post_message_chunked_sends_multiple_transport_requests(connect_patch):
+    _connect, _ws, incoming, outgoing = connect_patch
+    client = _RecordingClient(default_call_timeout=5.0)
+    await client.connect("ws://x")
+
+    large_body = {"payload": "abcdefghij"}
+    task = asyncio.create_task(
+        client.post_message_chunked(
+            receiver="peer-big",
+            body=large_body,
+            request_id="job-7",
+            chunk_size=5,
+        )
+    )
+
+    seen = 0
+    while not task.done():
+        await asyncio.sleep(0)
+        while seen < len(outgoing):
+            raw = outgoing[seen]
+            incoming.put_nowait(_response_for_outbound_raw(raw, "ok", result_type="str"))
+            seen += 1
+
+    report = await task
+    assert report.request_id == "job-7"
+    assert report.chunk_count == len(outgoing)
+    assert report.responses == ["ok"] * len(outgoing)
+    assert report.chunk_count > 1
+
+    first = _request_from_outbound_raw(outgoing[0])
+    first_args = first["arguments"]
+    assert first["method"] == "post_message"
+    assert first_args["receiver"] == "peer-big"
+    assert first_args["request_id"].startswith("job-7#chunk:1/")
+    assert CHUNK_MARKER in first_args["body"]
+    assert CHUNK_DATA_KEY in first_args["body"]
+    assert first_args["body"][CHUNK_MARKER]["request_id"] == "job-7"
+    await client.close()
+
+
+async def test_post_message_auto_uses_plain_post_for_small_body(connect_patch):
+    _connect, _ws, incoming, outgoing = connect_patch
+    client = _RecordingClient(default_call_timeout=5.0)
+    await client.connect("ws://x")
+
+    task = asyncio.create_task(
+        client.post_message_auto(
+            receiver="peer-small",
+            body={"msg": "hi"},
+            request_id="small-1",
+            auto_chunk_threshold=DEFAULT_AUTO_CHUNK_THRESHOLD,
+        )
+    )
+    await asyncio.sleep(0)
+    assert len(outgoing) == 1
+    req = _request_from_outbound_raw(outgoing[0])
+    assert req["arguments"]["body"] == {"msg": "hi"}
+    incoming.put_nowait(_response_for_outbound_raw(outgoing[0], "plain-ok", result_type="str"))
+
+    result = await task
+    assert result.chunked is False
+    assert result.response == "plain-ok"
+    assert result.chunk_report is None
+    await client.close()
+
+
+async def test_post_message_auto_switches_to_chunked_for_large_body(connect_patch):
+    _connect, _ws, incoming, outgoing = connect_patch
+    client = _RecordingClient(default_call_timeout=5.0)
+    await client.connect("ws://x")
+
+    big_body = {"payload": "x" * (DEFAULT_AUTO_CHUNK_THRESHOLD + 1024)}
+    task = asyncio.create_task(
+        client.post_message_auto(
+            receiver="peer-large",
+            body=big_body,
+            request_id="large-1",
+            chunk_size=64 * 1024,
+        )
+    )
+
+    seen = 0
+    while not task.done():
+        await asyncio.sleep(0)
+        while seen < len(outgoing):
+            raw = outgoing[seen]
+            incoming.put_nowait(_response_for_outbound_raw(raw, "chunk-ok", result_type="str"))
+            seen += 1
+
+    result = await task
+    assert result.chunked is True
+    assert result.response is None
+    assert result.chunk_report is not None
+    assert result.chunk_report.chunk_count > 1
+    assert len(outgoing) == result.chunk_report.chunk_count
+    first = _request_from_outbound_raw(outgoing[0])
+    assert CHUNK_MARKER in first["arguments"]["body"]
+    await client.close()
+
+
 async def test_inbound_receive_envelope_dispatches_and_replies(connect_patch):
     _connect, _ws, incoming, outgoing = connect_patch
     client = _RecordingClient()
@@ -165,6 +271,40 @@ async def test_inbound_receive_envelope_dispatches_and_replies(connect_patch):
     assert len(outgoing) == 1
     resp = loads_message(outgoing[0])
     assert resp.get("response", {}).get("result") == {"ok": True}
+    await client.close()
+
+
+async def test_inbound_chunked_receive_envelope_reassembles_before_dispatch(connect_patch):
+    _connect, _ws, incoming, outgoing = connect_patch
+    client = _RecordingClient()
+    await client.connect("ws://x")
+
+    batch = encode_chunked_bodies(
+        {"payload": "abcdefghij", "nested": {"n": 1}},
+        request_id="logical-42",
+        chunk_size=6,
+        transfer_id="transfer-42",
+    )
+
+    for index, chunk_body in enumerate(batch.bodies, start=1):
+        _enqueue_receive_envelope(
+            incoming,
+            {
+                "request_id": f"transport-{index}",
+                "sender": "peer-x",
+                "body": chunk_body,
+            },
+            f"in-{index}",
+        )
+        await asyncio.sleep(0)
+
+    assert len(client.envelope_calls) == 1
+    call = client.envelope_calls[0]
+    assert call["request_id"] == "logical-42"
+    assert call["body"] == {"payload": "abcdefghij", "nested": {"n": 1}}
+    assert call["chunk_transfer_id"] == "transfer-42"
+    assert call["chunk_count"] == batch.chunk_count
+    assert len(outgoing) == batch.chunk_count
     await client.close()
 
 

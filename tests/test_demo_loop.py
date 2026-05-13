@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from rpcproxy.client.envelope_types import ReceiveEnvelopeArguments
+from rpcproxy.client.handler_client import HandlerPostMessageClient, HandlerResult
 from rpcproxy.demo_loop import DemoRpcProxyClient, demo_echo_envelope_handler
 from rpcproxy.fastapi_ws_rpc import dumps_message, extract_request, loads_message, response_message
 
@@ -124,3 +125,28 @@ async def test_demo_client_post_message_echo_roundtrip(connect_patch):
     incoming.put_nowait(_response_for_outbound_raw(outgoing[1], "ok", result_type="str"))
     await asyncio.sleep(0)
     await client.close()
+
+
+async def test_handler_client_uses_post_message_auto_for_large_echo(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def handler(**_kwargs: Any) -> HandlerResult:
+        return HandlerResult(body={"payload": "x" * 32})
+
+    client = HandlerPostMessageClient(handler)
+    post_message_auto = AsyncMock(return_value={"chunked": True})
+    monkeypatch.setattr(client, "post_message_auto", post_message_auto)
+
+    arguments = cast(
+        ReceiveEnvelopeArguments,
+        {"request_id": "echo-big", "sender": "server-a", "body": {"payload": "x" * 32}},
+    )
+
+    await client._run_handler_pipeline_unlocked(arguments)
+
+    post_message_auto.assert_awaited_once_with(
+        receiver="server-a",
+        body={"payload": "x" * 32},
+        request_id="echo-big",
+        auto_chunk_threshold=262144,
+        chunk_size=262144,
+        compress=False,
+    )

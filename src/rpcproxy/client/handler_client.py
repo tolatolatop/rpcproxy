@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from rpcproxy.client.base import RpcProxyClientBase, _RECEIVE_ENVELOPE_KEYS, _arg_str
+from rpcproxy.client.chunking import DEFAULT_AUTO_CHUNK_THRESHOLD
 from rpcproxy.client.envelope_types import ReceiveEnvelopeArguments
 
 logger = logging.getLogger(__name__)
@@ -76,13 +77,23 @@ class HandlerPostMessageClient(RpcProxyClientBase):
         handler: EnvelopeHandler,
         *,
         max_inflight: int = 8,
+        auto_chunk_threshold: int = DEFAULT_AUTO_CHUNK_THRESHOLD,
+        auto_chunk_size: int = 256 * 1024,
+        auto_chunk_compress: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         if max_inflight < 1:
             raise ValueError("max_inflight must be >= 1")
+        if auto_chunk_threshold < 1:
+            raise ValueError("auto_chunk_threshold must be >= 1")
+        if auto_chunk_size < 1:
+            raise ValueError("auto_chunk_size must be >= 1")
         self._handler = handler
         self._handler_sem = asyncio.Semaphore(max_inflight)
+        self._auto_chunk_threshold = auto_chunk_threshold
+        self._auto_chunk_size = auto_chunk_size
+        self._auto_chunk_compress = auto_chunk_compress
 
     async def on_handler_exception(
         self, exc: BaseException, arguments: ReceiveEnvelopeArguments
@@ -153,6 +164,13 @@ class HandlerPostMessageClient(RpcProxyClientBase):
         recv = self._post_message_receiver(arguments)
         rid = self._resolve_post_request_id(result, arguments)
         try:
-            await self.post_message(receiver=recv, body=result.body, request_id=rid)
+            await self.post_message_auto(
+                receiver=recv,
+                body=result.body,
+                request_id=rid,
+                auto_chunk_threshold=self._auto_chunk_threshold,
+                chunk_size=self._auto_chunk_size,
+                compress=self._auto_chunk_compress,
+            )
         except Exception:
             logger.exception("handler client: post_message failed")

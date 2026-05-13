@@ -80,6 +80,7 @@ class RpcProxyClientBase(ABC):
         default_call_timeout: float | None = 30.0,
         relay_stash_max_size: int = 256,
         chunk_reassembly_max_pending: int = 128,
+        websocket_max_size: int | None = None,
     ) -> None:
         self._channel_id: str = uuid.uuid4().hex
         self._default_call_timeout = default_call_timeout
@@ -89,6 +90,7 @@ class RpcProxyClientBase(ABC):
         self._reader_task: asyncio.Task[None] | None = None
         self._relay_stash: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._relay_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._websocket_max_size = websocket_max_size
         self._chunk_reassembler = ChunkReassembler(
             max_pending=chunk_reassembly_max_pending
         )
@@ -114,7 +116,7 @@ class RpcProxyClientBase(ABC):
     async def connect(self, uri: str) -> None:
         if self._ws is not None:
             raise RuntimeError("already connected")
-        self._ws = await websockets.connect(uri)
+        self._ws = await websockets.connect(uri, max_size=self._websocket_max_size)
         self._reader_task = asyncio.create_task(self._reader_loop())
 
     def on_unmatched_message(self, msg: dict[str, Any]) -> None:
@@ -335,7 +337,13 @@ class RpcProxyClientBase(ABC):
             while True:
                 try:
                     raw = await self._ws.recv()
-                except ConnectionClosed:
+                except ConnectionClosed as exc:
+                    close_frame = exc.rcvd or exc.sent
+                    close_code = close_frame.code if close_frame is not None else None
+                    close_reason = close_frame.reason if close_frame is not None else ""
+                    logger.warning(
+                        "websocket closed code=%s reason=%s", close_code, close_reason
+                    )
                     break
                 if isinstance(raw, bytes):
                     logger.debug("ignore binary frame")

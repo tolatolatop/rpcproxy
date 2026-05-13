@@ -7,6 +7,8 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from websockets.exceptions import ConnectionClosedError
+from websockets.frames import Close
 
 from rpcproxy.client import (
     CHUNK_DATA_KEY,
@@ -85,9 +87,36 @@ async def test_connect_awaits_websockets_connect_with_uri(connect_patch):
     connect, ws, _incoming, _outgoing = connect_patch
     client = _RecordingClient()
     await client.connect("ws://example.test/rpc")
-    connect.assert_awaited_once_with("ws://example.test/rpc")
+    connect.assert_awaited_once_with("ws://example.test/rpc", max_size=None)
     assert client._ws is ws
     await client.close()
+
+
+async def test_reader_loop_logs_connection_closed_reason():
+    ws = AsyncMock()
+    ws.send = AsyncMock()
+    ws.close = AsyncMock()
+    ws.recv = AsyncMock(
+        side_effect=ConnectionClosedError(
+            Close(1009, "frame exceeds limit of 1048576 bytes"),
+            None,
+        )
+    )
+    connect = AsyncMock(return_value=ws)
+
+    with (
+        patch("rpcproxy.client.base.websockets.connect", connect),
+        patch("rpcproxy.client.base.logger.warning") as warning_mock,
+    ):
+        client = _RecordingClient()
+        await client.connect("ws://example.test/rpc")
+        await client.wait_until_disconnected()
+        warning_mock.assert_called_once_with(
+            "websocket closed code=%s reason=%s",
+            1009,
+            "frame exceeds limit of 1048576 bytes",
+        )
+        await client.close()
 
 
 async def test_set_state_roundtrip(connect_patch):

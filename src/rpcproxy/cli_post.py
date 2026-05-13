@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import asdict, is_dataclass
 import json
 import sys
 import uuid
@@ -63,15 +64,15 @@ async def run_post(
     body: dict[str, Any],
     request_id: str,
     timeout: float,
-) -> tuple[str, str, dict[str, Any]]:
-    """Send ``post_message`` and wait for matching ``receive_envelope`` relay receipt."""
+) -> tuple[str, Any, dict[str, Any]]:
+    """Send ``post_message_auto`` and wait for matching ``receive_envelope`` relay receipt."""
     rid = request_id.strip() or uuid.uuid4().hex
     client = _PostCliClient(default_call_timeout=timeout)
     await client.connect(url)
     wait_task = asyncio.create_task(client.wait_relay_predicate(rid, timeout))
     await asyncio.sleep(0)
     try:
-        post_result = await client.post_message(
+        post_result = await client.post_message_auto(
             receiver=receiver, body=body, request_id=rid
         )
         receipt = await wait_task
@@ -122,11 +123,13 @@ def register_post_command(group: click.Group) -> None:
         request_id: str,
         timeout: float,
     ) -> None:
-        """Connect, post_message then wait_relay_predicate; print JSON to stdout."""
+        """Connect, post_message_auto then wait_relay_predicate; print JSON to stdout."""
         try:
             rid, post_result, receipt = asyncio.run(
                 run_post(url, receiver, body, request_id, timeout)
             )
+            if is_dataclass(post_result):
+                post_result = asdict(post_result)
             print(
                 json.dumps(
                     {
